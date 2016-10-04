@@ -1,11 +1,13 @@
 defmodule KafkaEx.NetworkClient do
   require Logger
   alias KafkaEx.Protocol.Metadata.Broker
+  alias KafkaEx.AbstractSocket
+  alias KafkaEx.AbstractSocket.Socket
 
   @moduledoc false
-  @spec create_socket(binary, non_neg_integer) :: nil | :gen_tcp.socket
+  @spec create_socket(binary, non_neg_integer) :: nil | Socket.t
   def create_socket(host, port) do
-    case :gen_tcp.connect(format_host(host), port, [:binary, {:packet, 4}]) do
+    case AbstractSocket.create(format_host(host), port, default_socket_options) do
       {:ok, socket} ->
         Logger.log(:debug, "Succesfully connected to broker #{inspect(host)}:#{inspect port}")
         socket
@@ -15,14 +17,14 @@ defmodule KafkaEx.NetworkClient do
     end
   end
 
-  @spec close_socket(nil | :gen_tcp.socket) :: :ok
+  @spec close_socket(nil | Socket.t) :: :ok
   def close_socket(nil), do: :ok
-  def close_socket(socket), do: :gen_tcp.close(socket)
+  def close_socket(socket), do: AbstractSocket.close(socket)
 
   @spec send_async_request(Broker.t, iodata) :: :ok | {:error, :closed | :inet.posix}
   def send_async_request(broker, data) do
     socket = broker.socket
-    case :gen_tcp.send(socket, data) do
+    case AbstractSocket.send(socket, data) do
       :ok -> :ok
       {_, reason} ->
         Logger.log(:error, "Asynchronously sending data to broker #{inspect broker.host}:#{inspect broker.port} failed with #{inspect reason}")
@@ -32,10 +34,10 @@ defmodule KafkaEx.NetworkClient do
 
   @spec send_sync_request(Broker.t, iodata, timeout) :: nil | iodata
   def send_sync_request(%{:socket => socket} = broker, data, timeout) do
-    :ok = :inet.setopts(socket, [:binary, {:packet, 4}, {:active, false}])
-    response = case :gen_tcp.send(socket, data) do
+    :ok = AbstractSocket.setopts(socket, [:binary, {:packet, 4}, {:active, false}])
+    response = case AbstractSocket.send(socket, data) do
       :ok ->
-        case :gen_tcp.recv(socket, 0, timeout) do
+        case AbstractSocket.recv(socket, 0, timeout) do
           {:ok, data} -> data
           {:error, reason} ->
             Logger.log(:error, "Receiving data from broker #{inspect broker.host}:#{inspect broker.port} failed with #{inspect reason}")
@@ -46,7 +48,7 @@ defmodule KafkaEx.NetworkClient do
         nil
     end
 
-    :ok = :inet.setopts(socket, [:binary, {:packet, 4}, {:active, true}])
+    :ok = AbstractSocket.setopts(socket, [:binary, {:packet, 4}, {:active, true}])
     response
   end
 
@@ -55,6 +57,17 @@ defmodule KafkaEx.NetworkClient do
     case Regex.scan(~r/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/, host) do
       [match_data] = [[_, _, _, _, _]] -> match_data |> tl |> List.flatten |> Enum.map(&String.to_integer/1) |> List.to_tuple
       _ -> to_char_list(host)
+    end
+  end
+
+  defp default_socket_options do
+    default_options = [:binary, {:packet, 4}]
+    is_ssl = Application.get_env(:kafka_ex, :enable_ssl, false)
+    ssl_options = Application.get_env(:kafka_ex, :ssl_options, [])
+    if is_ssl do
+      default_options ++ ssl_options ++ [:ssl]
+    else
+      default_options
     end
   end
 end
